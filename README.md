@@ -1,3 +1,4 @@
+```
 [Sources API] ──► [Ingestion Jobs]
    (guardian|rss|url|pdf)      │
                                ▼
@@ -17,6 +18,7 @@
                          → Answerer → Evaluator]
                                   │
                             [/chat | /rag APIs]
+```
 
 
 
