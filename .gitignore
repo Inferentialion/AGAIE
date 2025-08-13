@@ -1,0 +1,10 @@
+agaie_venv/
+
+**/.env
+.env
+
+.vscode/
+
+data/
+
+dummies/*
