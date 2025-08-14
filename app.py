@@ -1,4 +1,3 @@
-# app/main.py
 from __future__ import annotations
 
 import io
@@ -11,7 +10,7 @@ import datetime as dt
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Literal
 
-import os  # kept only for environment variables
+import os
 import requests
 import feedparser
 from dotenv import load_dotenv
@@ -21,7 +20,6 @@ from fastapi.responses import JSONResponse
 from pypdf import PdfReader
 from pathlib import Path
 
-# Robust article-text extraction
 from trafilatura import fetch_url as tf_fetch_url, extract as tf_extract
 
 # ---------- constants & dirs ----------
@@ -38,7 +36,7 @@ for d in (RAW_DIR, PROC_DIR, JOBS_DIR):
 
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
-# ---------- small utils ----------
+# ---------- utils ----------
 def now_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -108,7 +106,7 @@ class PDFParams(BaseModel):
     type: Literal["pdf"] = "pdf"
     url: HttpUrl
 
-SourcePayload = GuardianParams | RSSParams | URLParams | PDFParams
+SourcePayload = GuardianParams | RSSParams | URLParams | PDFParams  # thus, our SourcePayload is one of the above pydantic models
 
 # ---------- normalized doc model ----------
 @dataclass
@@ -190,7 +188,7 @@ def ingest_guardian(p: GuardianParams, job_id: str) -> List[NormalizedDoc]:
         meta = payload.get("response", {})
         if meta.get("currentPage") >= meta.get("pages", 1):
             break
-        time.sleep(0.2)  # be polite
+        time.sleep(0.2)
 
     return docs
 
