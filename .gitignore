@@ -1,10 +1,27 @@
-agaie_venv/
+# Python bytecode
+__pycache__/
+*.py[cod]
 
-**/.env
+# Package metadata
+*.egg-info/
+*.egg
+*.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+agaie_venv/
 .env
 
-.vscode/
-
+# Local data outputs
 data/
 
+# IDE/editor configs
+.vscode/
+.idea/
+*.swp
+
 dummies/*
+
+

@@ -23,22 +23,28 @@ from pathlib import Path
 
 from trafilatura import fetch_url as tf_fetch_url, extract as tf_extract
 
-# ---------- constants & dirs ----------
-BASE_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]   
+load_dotenv(PROJECT_ROOT / ".env")                   
+load_dotenv()                                       
 
-# Load .env if present (keeps env concerns separate from paths)
-load_dotenv(BASE_DIR / ".env")
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
 
-RAW_DIR = BASE_DIR / "data" / "raw"
-PROC_DIR = BASE_DIR / "data" / "processed"
-JOBS_DIR = BASE_DIR / "data" / "jobs"
+RAW_DIR  = DATA_ROOT / "raw"
+PROC_DIR = DATA_ROOT / "processed"
+JOBS_DIR = DATA_ROOT / "jobs"
+
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
+
+RAW_DIR  = DATA_ROOT / "raw"
+PROC_DIR = DATA_ROOT / "processed"
+JOBS_DIR = DATA_ROOT / "jobs"
 for d in (RAW_DIR, PROC_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
-ALPHAVANTAGE_API_KEY = (os.environ.get("ALPHAVANTAGE_API_KEY") or "").strip()
+ALPHA_VANTAGE_API_KEY = (os.environ.get("ALPHA_VANTAGE_API_KEY") or "").strip()
 
 # ---------- utils ----------
 def now_iso() -> str:
@@ -183,13 +189,13 @@ def ingest_alphavantage(p: AlphaVantageParams, job_id: str) -> List[NormalizedDo
     :param job_id: Ingestion job identifier.
     :return: List of NormalizedDoc items.
     """
-    if not ALPHAVANTAGE_API_KEY:
-        raise RuntimeError("Missing ALPHAVANTAGE_API_KEY env var")
+    if not ALPHA_VANTAGE_API_KEY:
+        raise RuntimeError("Missing ALPHA_VANTAGE_API_KEY env var")
 
     base = "https://www.alphavantage.co/query"
     query: Dict[str, Any] = {
         "function": "NEWS_SENTIMENT",
-        "apikey": ALPHAVANTAGE_API_KEY,
+        "apikey": ALPHA_VANTAGE_API_KEY,
         "sort": p.sort or "LATEST",
         "limit": min(1000, int(p.limit)),
     }
@@ -541,8 +547,8 @@ app = FastAPI(title="Corpus-agnostic Ingestion Manager", version="0.1.0")
 def add_source(payload: SourcePayload, bg: BackgroundTasks):
     if isinstance(payload, GuardianParams) and not GUARDIAN_API_KEY:
         raise HTTPException(status_code=400, detail="Missing GUARDIAN_API_KEY")
-    if isinstance(payload, AlphaVantageParams) and not ALPHAVANTAGE_API_KEY:
-        raise HTTPException(status_code=400, detail="Missing ALPHAVANTAGE_API_KEY")
+    if isinstance(payload, AlphaVantageParams) and not ALPHA_VANTAGE_API_KEY:
+        raise HTTPException(status_code=400, detail="Missing ALPHA_VANTAGE_API_KEY")
 
     job_id = uuid.uuid4().hex
     job_file = write_job_file(job_id, payload.model_dump())

@@ -104,3 +104,10 @@ json
   ]
 }
  </pre>
+
+ ## Potential issues and solutions
+
+ If you are running this from linux (as I am) and are having an error with ```uvicorn agaie.app:app --reaload --port X```,
+ it most likely related to inotify tracking too many files (e.g. if you have the venv in the project directory, or due to caches, etc.). 
+
+ A hot fix is to use ```WATCHFILES_FORCE_POLLING=1 uvicorn agaie.app:app --reload --port 8001``` so that it uses uvicorn's polling mode which is more relaxed.
