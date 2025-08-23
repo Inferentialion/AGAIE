@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/agaie/__init__.py
+src/agaie.egg-info/PKG-INFO
+src/agaie.egg-info/SOURCES.txt
+src/agaie.egg-info/dependency_links.txt
+src/agaie.egg-info/requires.txt
+src/agaie.egg-info/top_level.txt

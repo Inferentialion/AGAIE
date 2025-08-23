@@ -8,7 +8,8 @@ import time
 import uuid
 import datetime as dt
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Annotated
+from urllib.parse import urlencode
 
 import os
 import requests
@@ -34,14 +35,17 @@ JOBS_DIR = BASE_DIR / "data" / "jobs"
 for d in (RAW_DIR, PROC_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
+
+ALPHAVANTAGE_API_KEY = (os.environ.get("ALPHAVANTAGE_API_KEY") or "").strip()
 
 # ---------- utils ----------
 def now_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 def slugify(s: str) -> str:
-    return re.sub(r"[^a-z0-9\\-]+", "-", s.lower()).strip("-")[:120]
+    return re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")[:120]
 
 def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
@@ -83,6 +87,25 @@ def update_job(job_id: str, **kw) -> None:
     data.update(kw)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def _alphavantage_time_to_iso(t: Optional[str]) -> Optional[str]:
+    """
+    Convert Alpha Vantage 'time_published' (e.g., '20240822T153036' or '20240822T1530')
+    into an ISO8601 'YYYY-MM-DDTHH:MM:SSZ'.
+
+    :param t: Alpha Vantage time string without timezone.
+    :return: ISO8601 UTC string or None on parse failure.
+    """
+    if not t:
+        return None
+    t = t.strip()
+    fmts = ["%Y%m%dT%H%M%S", "%Y%m%dT%H%M"]
+    for fmt in fmts:
+        try:
+            return dt.datetime.strptime(t, fmt).replace(microsecond=0).isoformat() + "Z"
+        except Exception:
+            continue
+    return None
+
 # ---------- Pydantic payloads ----------
 class GuardianParams(BaseModel):
     type: Literal["guardian"] = "guardian"
@@ -92,6 +115,36 @@ class GuardianParams(BaseModel):
     to_date: Optional[str] = Field(default=None, description="YYYY-MM-DD")
     page_size: int = Field(default=100, ge=1, le=200)  # API commonly caps at 200
     max_pages: int = Field(default=3, ge=1, le=50)
+
+class AlphaVantageParams(BaseModel):
+    type: Literal["alphavantage"] = "alphavantage"
+    tickers: Optional[List[str]] = Field(
+        default=None,
+        description="List of symbols to filter (e.g., ['AAPL', 'MSFT'] or CRYPTO:/FOREX prefixes)."
+    )
+    topics: Optional[List[str]] = Field(
+        default=None,
+        description="Alpha Vantage topics, e.g. ['earnings','mergers_and_acquisitions','economy_monetary']."
+    )
+    time_from: Optional[str] = Field(
+        default=None, description="Lower bound in YYYYMMDDTHHMM (UTC)."
+    )
+    time_to: Optional[str] = Field(
+        default=None, description="Upper bound in YYYYMMDDTHHMM (UTC)."
+    )
+    sort: Optional[Literal["LATEST", "EARLIEST", "RELEVANCE"]] = "LATEST"
+    limit: int = Field(default=100, ge=1, le=1000)
+    fetch_full_text: bool = Field(
+        default=False,
+        description="If true, attempt Trafilatura extraction; else rely on AV summary/title.",
+    )
+    explode_by_ticker: bool = Field(
+        default=False,
+        description="If true, emit one NormalizedDoc per (article,ticker) with per-ticker sentiment.",
+    )
+    rate_limit_sleep_sec: int = Field(
+        default=13, ge=0, le=120, description="Sleep between paged/windowed calls if needed."
+    )
 
 class RSSParams(BaseModel):
     type: Literal["rss"] = "rss"
@@ -106,7 +159,8 @@ class PDFParams(BaseModel):
     type: Literal["pdf"] = "pdf"
     url: HttpUrl
 
-SourcePayload = GuardianParams | RSSParams | URLParams | PDFParams  # thus, our SourcePayload is one of the above pydantic models
+SourcePayload = Annotated[GuardianParams | RSSParams | URLParams | PDFParams | AlphaVantageParams,
+                          Field(discriminator='type')]  # thus, our SourcePayload is one of the above pydantic models
 
 # ---------- normalized doc model ----------
 @dataclass
@@ -121,6 +175,149 @@ class NormalizedDoc:
     metadata: Dict[str, Any]
 
 # ---------- loaders ----------
+def ingest_alphavantage(p: AlphaVantageParams, job_id: str) -> List[NormalizedDoc]:
+    """
+    Ingest market news via Alpha Vantage NEWS_SENTIMENT.
+
+    :param p: AlphaVantageParams with filters (tickers, topics, time range).
+    :param job_id: Ingestion job identifier.
+    :return: List of NormalizedDoc items.
+    """
+    if not ALPHAVANTAGE_API_KEY:
+        raise RuntimeError("Missing ALPHAVANTAGE_API_KEY env var")
+
+    base = "https://www.alphavantage.co/query"
+    query: Dict[str, Any] = {
+        "function": "NEWS_SENTIMENT",
+        "apikey": ALPHAVANTAGE_API_KEY,
+        "sort": p.sort or "LATEST",
+        "limit": min(1000, int(p.limit)),
+    }
+    if p.tickers:
+        query["tickers"] = ",".join([t.strip() for t in p.tickers if t.strip()])
+    if p.topics:
+        query["topics"] = ",".join([t.strip() for t in p.topics if t.strip()])
+    if p.time_from:
+        query["time_from"] = p.time_from
+    if p.time_to:
+        query["time_to"] = p.time_to
+
+    # Prepare dirs and fire request
+    raw_dir = RAW_DIR / "alphavantage" / job_id
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    url = f"{base}?{urlencode(query)}"
+    r = requests.get(url, timeout=30)
+    try:
+        r.raise_for_status()
+    except Exception as e:
+        # Write the raw text for debugging before raising
+        (raw_dir / "error_http.txt").write_text(r.text, encoding="utf-8")
+        raise
+
+    payload = r.json()
+    # Alpha Vantage sends "Note" or "Information" when you hit limits/quotas.
+    if isinstance(payload, dict) and any(k in payload for k in ("Note", "Information", "Error Message")):
+        (raw_dir / "error_api.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Fail fast; the job file will capture this.
+        msg = payload.get("Note") or payload.get("Information") or payload.get("Error Message") or "Alpha Vantage error"
+        raise RuntimeError(f"Alpha Vantage returned a limit/error message: {msg}")
+
+    # Persist raw for auditability
+    (raw_dir / "response.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    feed = payload.get("feed") or []
+    docs: List[NormalizedDoc] = []
+    seen_ids: set[str] = set()
+
+    for item in feed:
+        url = item.get("url") or ""
+        title = item.get("title")
+        pub_iso = _alphavantage_time_to_iso(item.get("time_published"))
+        authors = item.get("authors")
+        authors_str = ", ".join(authors) if isinstance(authors, list) else (authors or None)
+        summary = (item.get("summary") or "").strip()
+
+        # Minimal text for downstream NLP; optionally augment with full text
+        text = summary
+        if p.fetch_full_text and url:
+            try:
+                extracted = extract_with_trafilatura(url) or ""
+                if extracted.strip():
+                    text = extracted
+            except Exception:
+                pass
+        if not (text or title):
+            # If nothing to index, skip
+            continue
+
+        topics = item.get("topics") or []  # list of {"topic": "...", "relevance_score": "..."}
+        overall_score = item.get("overall_sentiment_score")
+        overall_label = item.get("overall_sentiment_label")
+        ticker_sentiment = item.get("ticker_sentiment") or []  # list of {"ticker": "...", "relevance_score": "...", ...}
+
+        if p.explode_by_ticker and ticker_sentiment:
+            for ts in ticker_sentiment:
+                tk = ts.get("ticker")
+                comp_id = sha1((url or "") + "::" + (tk or ""))
+                if comp_id in seen_ids:
+                    continue
+                seen_ids.add(comp_id)
+                docs.append(
+                    NormalizedDoc(
+                        id=comp_id,
+                        source_type="alphavantage",
+                        source_url=url,
+                        title=title,
+                        author=authors_str,
+                        published_at=pub_iso,
+                        text=text or (title or ""),
+                        metadata={
+                            "source": item.get("source"),
+                            "source_domain": item.get("source_domain"),
+                            "category_within_source": item.get("category_within_source"),
+                            "banner_image": item.get("banner_image"),
+                            "topics": topics,
+                            "overall_sentiment_score": overall_score,
+                            "overall_sentiment_label": overall_label,
+                            "ticker": tk,
+                            "ticker_relevance": ts.get("relevance_score"),
+                            "ticker_sentiment_score": ts.get("ticker_sentiment_score"),
+                            "ticker_sentiment_label": ts.get("ticker_sentiment_label"),
+                        },
+                    )
+                )
+        else:
+            # Article-level record with all tickers
+            doc_id = sha1(url or (title or "") + str(pub_iso))
+            if doc_id in seen_ids:
+                continue
+            seen_ids.add(doc_id)
+            docs.append(
+                NormalizedDoc(
+                    id=doc_id,
+                    source_type="alphavantage",
+                    source_url=url,
+                    title=title,
+                    author=authors_str,
+                    published_at=pub_iso,
+                    text=text or (title or ""),
+                    metadata={
+                        "source": item.get("source"),
+                        "source_domain": item.get("source_domain"),
+                        "category_within_source": item.get("category_within_source"),
+                        "banner_image": item.get("banner_image"),
+                        "topics": topics,
+                        "overall_sentiment_score": overall_score,
+                        "overall_sentiment_label": overall_label,
+                        "tickers": [ts.get("ticker") for ts in ticker_sentiment if ts.get("ticker")],
+                        "ticker_sentiment": ticker_sentiment,
+                    },
+                )
+            )
+
+    return docs
+
 def ingest_guardian(p: GuardianParams, job_id: str) -> List[NormalizedDoc]:
     if not GUARDIAN_API_KEY:
         raise RuntimeError("Missing GUARDIAN_API_KEY env var")
@@ -327,6 +524,8 @@ def run_ingest_job(job_id: str, payload: Dict[str, Any]) -> None:
             docs = ingest_url(URLParams(**payload), job_id)
         elif kind == "pdf":
             docs = ingest_pdf(PDFParams(**payload), job_id)
+        elif kind == "alphavantage":
+            docs = ingest_alphavantage(AlphaVantageParams(**payload), job_id)
         else:
             raise ValueError(f"Unknown source type: {kind}")
 
@@ -342,6 +541,9 @@ app = FastAPI(title="Corpus-agnostic Ingestion Manager", version="0.1.0")
 def add_source(payload: SourcePayload, bg: BackgroundTasks):
     if isinstance(payload, GuardianParams) and not GUARDIAN_API_KEY:
         raise HTTPException(status_code=400, detail="Missing GUARDIAN_API_KEY")
+    if isinstance(payload, AlphaVantageParams) and not ALPHAVANTAGE_API_KEY:
+        raise HTTPException(status_code=400, detail="Missing ALPHAVANTAGE_API_KEY")
+
     job_id = uuid.uuid4().hex
     job_file = write_job_file(job_id, payload.model_dump())
     bg.add_task(run_ingest_job, job_id, payload.model_dump())
