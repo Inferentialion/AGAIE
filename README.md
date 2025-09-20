@@ -111,3 +111,8 @@ json
  it most likely related to inotify tracking too many files (e.g. if you have the venv in the project directory, or due to caches, etc.). 
 
  A hot fix is to use ```WATCHFILES_FORCE_POLLING=1 uvicorn agaie.app:app --reload --port 8001``` so that it uses uvicorn's polling mode which is more relaxed.
+
+
+ ## RAG
+
+ Description: builds a dense+BM25 hybrid index from the extracted and processed chunks.jsonl files (data/processed/...), exposes a fusion retriever (RRF/weighted), and provides a debug /search API to inspect top‑K results with scores.
