@@ -105,6 +105,12 @@ json
 }
  </pre>
 
+
+ ## RAG
+
+ Description: builds a dense+BM25 hybrid index from the extracted and processed chunks.jsonl files (data/processed/...), exposes a fusion retriever (RRF/weighted), and provides a debug /search API to inspect top‑K results with scores.
+
+
  ## Potential issues and solutions
 
  If you are running this from linux (as I am) and are having an error with ```uvicorn agaie.app:app --reaload --port X```,
@@ -112,7 +118,3 @@ json
 
  A hot fix is to use ```WATCHFILES_FORCE_POLLING=1 uvicorn agaie.app:app --reload --port 8001``` so that it uses uvicorn's polling mode which is more relaxed.
 
-
- ## RAG
-
- Description: builds a dense+BM25 hybrid index from the extracted and processed chunks.jsonl files (data/processed/...), exposes a fusion retriever (RRF/weighted), and provides a debug /search API to inspect top‑K results with scores.
