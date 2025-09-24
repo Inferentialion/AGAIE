@@ -1,28 +1,72 @@
-## Conceptual AGAIE Workflow
+## AGAIE Workflow
 
 ```
-[Sources API] ──► [Ingestion Jobs]
-   (guardian|rss|url|pdf)      │
-                               ▼
-                        [Doc Normalizer]
-                   (chunk, metadata, NER tickers)
-                               │
-                  ┌────────────┴────────────┐
-                  ▼                         ▼
-          [Dense Index / Vector DB]   [Sparse Index]
-                (embeddings)            (BM25 or SPLADE)
-                  │                         │
-                  └─────► [Hybrid Fusion Retriever] ◄─────┘
-                                  │
-                           [ColBERT Reranker]
-                                  │
-                    [LangGraph Agents: Planner → Retriever
-                         → Answerer → Evaluator]
-                                  │
-                            [/chat | /rag APIs]
+                           ┌───────────────────────────────────────────────────────┐
+                           │                    FRONTEND (Public)                  │
+                           │   /query  (/chat)   [Q&A over corpus]                 │
+                           │   /sources  [choose source / "bring your own data"]   │
+                           └───────────────────────────────────────────────────────┘
+
+        ┌─────────────────────────────── INGEST LANE (Backend plumbing) ───────────────────────────────┐
+          [POST /sources]  (Public or Admin)
+                │  creates job_id + bg task
+                ▼
+          [Ingestion Jobs]  ──► fetch guardian | rss | url | pdf | alphavantage
+                ▼
+          [Doc Normalizer]  ──► chunk(400/40), metadata, (optional NER tickers)
+                ▼
+          writes: data/processed/<job_id>/normalized.jsonl & chunks.jsonl
+                │
+                ├───(Private) [GET /jobs/{job_id}]  ← poll status
+                │
+                └───(Private) [POST /index/build {job_id, index_name}]
+                              └──► builds/updates persistent stores:
+                                      ┌───────────────────────────────┐
+                                      │ [Dense Index / Vector DB]     │  (embeddings)
+                                      └───────────────────────────────┘
+                                      ┌───────────────────────────────┐
+                                      │ [Sparse Index]                │  (BM25 or SPLADE)
+                                      └───────────────────────────────┘
+
+                (Optional automation: after /sources succeeds,
+                a background hook auto-calls /index/build)
+        └──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+        ┌─────────────────────────────── QUERY LANE (User path) ───────────────────────────────────────┐
+          (Public) [POST /query]  or  [POST /chat]
+                ▼
+          [LangGraph Supervisor]
+                │
+                ├─► Planner Node      → rewrites question / spawns subqueries
+                │
+                ├─► Retriever Node    → calls:
+                │        ┌────────────────────────────────────────────────────────────┐
+                │        │ [Hybrid Fusion Retriever]  (dense + sparse, RRF/weighted) │
+                │        └────────────────────────────────────────────────────────────┘
+                │                      ▲                       ▲
+                │                      │                       │
+                │             Dense Index / Vector DB     Sparse Index (BM25/SPLADE)
+                │             ----------------------      -------------------------
+                │
+                ├─► (optional) ColBERT Reranker  → top-k precision bump
+                │
+                ├─► Answerer Node   → synthesize grounded answer + citations
+                │
+                └─► Evaluator Node  → quick faithfulness/coverage check
+                        └─ if low confidence → retry Planner/Retriever once
+
+          returns:  { answer, citations[], confidence }
+        └──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+Legend:
+- Public endpoints (frontend):  /query (/chat), optionally /sources
+- Private/ops endpoints:        /jobs/{id}, /index/build
+- Optional automation:          auto-trigger /index/build when /sources job succeeds
+- Same hybrid retriever can also be exposed as a Tool for agentic follow-ups if desired
+
 ```
-
-
 
 ## Alpha Vantage API
 

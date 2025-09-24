@@ -23,6 +23,31 @@ from pathlib import Path
 
 from trafilatura import fetch_url as tf_fetch_url, extract as tf_extract
 
+"""
+User-facing endpoints (frontend or API consumers)
+
+Exposed to the web UI/chatbot:
+
+POST /query
+→ Ask natural-language questions, get answers + citations.
+
+(Optional, if you want a “bring your own data” demo)
+POST /sources
+→ Let a user specify a new source (e.g. RSS URL, Guardian section, PDF link).
+
+Backend / ops-facing endpoints (plumbing)
+
+These are necessary for the pipeline but not for normal end-users:
+
+GET /jobs/{job_id}
+→ Poll ingestion job status. Useful for automation / dashboards, not for a regular user.
+
+POST /index/build
+→ Builds/refreshes the hybrid index from processed docs.
+"""
+
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]   
 load_dotenv(PROJECT_ROOT / ".env")                   
 load_dotenv()                                       
@@ -539,6 +564,7 @@ def run_ingest_job(job_id: str, payload: Dict[str, Any]) -> None:
         update_job(job_id, status="succeeded", finished_at=now_iso(), stats=stats)
     except Exception as e:
         update_job(job_id, status="failed", finished_at=now_iso(), error=str(e))
+
 
 # ---------- FastAPI ----------
 app = FastAPI(title="Corpus-agnostic Ingestion Manager", version="0.1.0")
