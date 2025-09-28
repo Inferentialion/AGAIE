@@ -20,8 +20,11 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from pypdf import PdfReader
 from pathlib import Path
+import yaml
 
 from trafilatura import fetch_url as tf_fetch_url, extract as tf_extract
+
+from agaie.rag.index_build import build_vector_index, load_index, make_hybrid_fusion_retriever, hybrid_search
 
 """
 User-facing endpoints (frontend or API consumers)
@@ -70,6 +73,9 @@ for d in (RAW_DIR, PROC_DIR, JOBS_DIR):
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
 ALPHA_VANTAGE_API_KEY = (os.environ.get("ALPHA_VANTAGE_API_KEY") or "").strip()
+
+with open('configs/config.yaml', 'r') as file:
+    config = yaml.safe_load(file)
 
 # ---------- utils ----------
 def now_iso() -> str:
@@ -579,6 +585,25 @@ def add_source(payload: SourcePayload, bg: BackgroundTasks):
     job_id = uuid.uuid4().hex
     job_file = write_job_file(job_id, payload.model_dump())
     bg.add_task(run_ingest_job, job_id, payload.model_dump())
+
+    # (Optional) trigger index/build automatically after extraction
+
+    # chain a background follow-up that polls for success and then builds the index
+    def _after_ingest_build_index(job_id: str):
+        for _ in range(90):  # poll up to ~90s; tune as needed
+            data = json.loads(job_path_for(job_id).read_text(encoding="utf-8"))
+            if data.get("status") == "succeeded":
+                try:
+                    build_vector_index(job_id, index_name=os.environ.get("INDEX_NAME","finance-news"))
+                except Exception as e:
+                    update_job(job_id, index_error=str(e))
+                break
+            elif data.get("status") == "failed":
+                break
+            time.sleep(1.0)
+
+    bg.add_task(_after_ingest_build_index, job_id)
+
     return {"job_id": job_id, "job_file": str(job_file)}
 
 @app.get("/jobs/{job_id}")
@@ -587,4 +612,64 @@ def job_status(job_id: str):
     if not path.exists():
         raise HTTPException(404, "job not found")
     return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+# WIP -----------------------------------------------------------------
+# ---------------------------------------------------------------------
+
+class BuildIndexReq(BaseModel):
+    job_id: str
+    index_name: str = "finance-news"
+
+@app.post("/index/build")
+def index_build(req: BuildIndexReq):   # TODO: call index_build.py here
+    jf = job_path_for(req.job_id)
+    if not jf.exists():
+        raise HTTPException(404, "job not found")
+    job = json.loads(jf.read_text(encoding="utf-8"))
+    if job.get("status") != "succeeded":
+        raise HTTPException(409, f"job status is {job.get('status')}, not 'succeeded'")
+    index = build_vector_index(req.job_id, index_name=req.index_name)
+    return {"ok": True, "index_name": req.index_name, "index": index}
+
+class QueryReq(BaseModel):  # TODO: change this; we don't want the user to set these
+    question: str
+    index_name: str = "finance-news"
+    top_k: int = 8
+    dense_k: int = 20
+    sparse_k: int = 60
+
+@app.post("/query")
+def query(req: QueryReq):
+    # Load an already-built index
+    index = load_index(index_name=req.index_name, use_weaviate=config["rag"]["ingestion"]["use_weaviate"])
+
+    # Build a query engine from it
+    query_engine = index.as_query_engine(similarity_top_k=config["rag"]["retrieval"]["top_k"], response_mode="no_text")
+    
+    if config["rag"]["ingestion"]["hybrid"] == True:
+        retr = make_hybrid_fusion_retriever(
+            index_name=req.index_name,
+            dense_top_k=req.dense_k, sparse_top_k=req.sparse_k, fusion_top_k=req.top_k
+        )
+        resp = hybrid_search(retr, req.question, k=req.top_k)
+    else:
+        resp = query_engine.query(req.question)
+
+    # Collect context and citations
+    ctx = "\n\n".join(sn.node.get_content() for sn in resp.source_nodes[: req.top_k])
+    cites = list({
+        (sn.node.metadata or {}).get("source_url")
+        for sn in resp.source_nodes
+        if (sn.node.metadata or {}).get("source_url")
+    })
+
+    # TODO: substitute by our actual agentic loop (add citations into such loop)
+    prompt = (
+        "Answer the user's question using ONLY the context. "
+        "Cite URLs at the end.\n\n"
+        f"QUESTION:\n{req.question}\n\nCONTEXT:\n{ctx}\n"
+    )
+    answer = llm.invoke([HumanMessage(content=prompt)]).content
+    
+    return {"answer": answer, "citations": cites[:10]}
 

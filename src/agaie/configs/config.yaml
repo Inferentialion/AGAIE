@@ -1,0 +1,8 @@
+rag:
+  
+  ingestion:
+    use_weaviate: True,
+  
+  retrieval:
+    hybrid: False,
+    top_k: 8,

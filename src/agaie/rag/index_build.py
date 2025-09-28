@@ -163,8 +163,31 @@ def build_vector_index(chunks_path, index_name = "finance-news", use_weaviate=Fa
 
     return index
 
+def load_index(index_name: str, use_weaviate: bool = False, embed_model = None):
+    embedder = make_embedder()
+    
+    if use_weaviate:
+        # attach to remote store to reaccess it
+        vs = build_vector_store()
+        return VectorStoreIndex.from_vector_store(vs, embed_model=embedder)
+    else:
+        persist_dir = INDEX_DIR / index_name
+        storage = StorageContext.from_defaults(persist_dir=str(persist_dir))
+        return load_index_from_storage(storage, embed_model=embed_model)
+    
+
+def make_hybrid_fusion_retriever():
+    """WIP"""
+    pass
+
+def hybrid_search():
+    """WIP"""
+    pass
+
 
 def test_retrieval(index_name, query, k):
     vector_store = build_vector_store(class_name="FinanceNewsChunk")
     # TODO: we don't need StorageContext here, and we don't need load_index_from_storage,
     # as we are using weaviate as the single source of truth, aiming a a multiprocess approach later on (stateless).
+
+    
