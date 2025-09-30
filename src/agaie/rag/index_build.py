@@ -188,6 +188,6 @@ def hybrid_search():
 def test_retrieval(index_name, query, k):
     vector_store = build_vector_store(class_name="FinanceNewsChunk")
     # TODO: we don't need StorageContext here, and we don't need load_index_from_storage,
-    # as we are using weaviate as the single source of truth, aiming a a multiprocess approach later on (stateless).
+    # as we are using weaviate as the single source of truth, and aiming a a multiprocess approach later on (stateless).
 
     

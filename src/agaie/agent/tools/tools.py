@@ -28,9 +28,14 @@ def calculator(expression: str) -> str:
 def make_knowledge_base_search_tool(query_engine):
     """Build the knowledge_base_search_tool, bound to a Weaviate-backed index."""
     
-    @tool
-    def knowledge_base_search(user_query: str, ):
+    @tool(name="knowledge_base_search")             # TODO: create and pass in an args_schema
+    def knowledge_base_search(agent_query: str):
         """Give the agent access to the RAG system."""
-        pass
+        
+        resp = query_engine.query(agent_query)
+
+        return resp
+    
+    return knowledge_base_search
 
 

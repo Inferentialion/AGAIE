@@ -25,6 +25,7 @@ import yaml
 from trafilatura import fetch_url as tf_fetch_url, extract as tf_extract
 
 from agaie.rag.index_build import build_vector_index, load_index, make_hybrid_fusion_retriever, hybrid_search
+from agaie.agent.agent_chain import create_agent
 
 """
 User-facing endpoints (frontend or API consumers)
@@ -647,15 +648,26 @@ def query(req: QueryReq):
     query_engine = index.as_query_engine(similarity_top_k=config["rag"]["retrieval"]["top_k"], response_mode="no_text")
     
     if config["rag"]["ingestion"]["hybrid"] == True:
+        
         retr = make_hybrid_fusion_retriever(
             index_name=req.index_name,
             dense_top_k=req.dense_k, sparse_top_k=req.sparse_k, fusion_top_k=req.top_k
         )
         resp = hybrid_search(retr, req.question, k=req.top_k)
+
+        # TODO: also create something create_agent's knowledge_base_search tool can use in its
+        
+        agent_executor = create_agent()  # TODO: pass the custom retriever / custom query engine instead of LlamaIndex's here
+        # TODO: do I need to spawn an agent each time a query comes in?
+        answer = agent_executor.invoke({"input": req.question})
+
     else:
         resp = query_engine.query(req.question)
 
-    # Collect context and citations
+        agent_executor = create_agent(query_engine)  # TODO: do I need to spawn an agent each time a query comes in?
+        answer = agent_executor.invoke({"input": req.question})
+    
+    # Collect context and citations (TODO: currently only from the original query's retrieval, no tool usage included)
     ctx = "\n\n".join(sn.node.get_content() for sn in resp.source_nodes[: req.top_k])
     cites = list({
         (sn.node.metadata or {}).get("source_url")
@@ -663,13 +675,5 @@ def query(req: QueryReq):
         if (sn.node.metadata or {}).get("source_url")
     })
 
-    # TODO: substitute by our actual agentic loop (add citations into such loop)
-    prompt = (
-        "Answer the user's question using ONLY the context. "
-        "Cite URLs at the end.\n\n"
-        f"QUESTION:\n{req.question}\n\nCONTEXT:\n{ctx}\n"
-    )
-    answer = llm.invoke([HumanMessage(content=prompt)]).content
-    
     return {"answer": answer, "citations": cites[:10]}
 
