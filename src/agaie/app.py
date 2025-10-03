@@ -74,12 +74,13 @@ JOBS_DIR = DATA_ROOT / "jobs"
 for d in (RAW_DIR, PROC_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "config.yaml"
 
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
 ALPHA_VANTAGE_API_KEY = (os.environ.get("ALPHA_VANTAGE_API_KEY") or "").strip()
 
-with open('configs/config.yaml', 'r') as file:
+with open(CONFIG_PATH, 'r') as file:
     config = yaml.safe_load(file)
 
 # ---------- utils ----------

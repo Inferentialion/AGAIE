@@ -1,7 +1,7 @@
 import time
 from functools import wraps
 from typing import Any, Dict, Optional
-from src.agaie.observability.metrics import AGENT_TTFB, TOOL_LATENCY, TOOL_ERRORS, RATE_LIMIT_ERRORS
+from agaie.observability.metrics import AGENT_TTFB, TOOL_LATENCY, TOOL_ERRORS, RATE_LIMIT_ERRORS
 from openai import RateLimitError as OpenAIRateLimitError
 from langchain_core.callbacks import BaseCallbackHandler
 
