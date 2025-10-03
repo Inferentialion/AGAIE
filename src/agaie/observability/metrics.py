@@ -3,7 +3,7 @@ from prometheus_client import Counter, Histogram
 
 # adjust to our observed latency envelope (typical range of end-to-end response latency)
 
-AGENT_TFFB = Histogram(
+AGENT_TTFB = Histogram(
     "agent_ttfb_seconds",
     "Time-to-first-byte for agent reponses",
     ["lane", "model"],

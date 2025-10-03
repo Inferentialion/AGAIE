@@ -1,8 +1,9 @@
 import time
 from functools import wraps
 from typing import Any, Dict, Optional
-from src.agaie.metrics import AGENT_TFFB, AGENT_LATENCY, TOOL_LATENCY, TOOL_ERRORS, RATE_LIMIT_ERRORS
+from src.agaie.observability.metrics import AGENT_TTFB, TOOL_LATENCY, TOOL_ERRORS, RATE_LIMIT_ERRORS
 from openai import RateLimitError as OpenAIRateLimitError
+from langchain_core.callbacks import BaseCallbackHandler
 
 
 def instrument_tool(tool_fn, tool_name: Optional[str] = None):
@@ -55,6 +56,39 @@ def instrument_tool(tool_fn, tool_name: Optional[str] = None):
     
     return _wrapped
 
+
+class TTFBCallback(BaseCallbackHandler):
+    """
+    LangChain callback that captures time-to-first-token for streaming LLM calls.
+    Records TTFB once per request using the outer 'request_context' dict.
+
+    Rationale: we use a callback to more precisely have insights into the LLM workflow and timings 
+    instead of having to measure the end-to-end, application latency.
+
+    :param lane: Logical lane name ("query", "ingest", etc.) for labeling.
+    :param model_name: Model identifier used for labeling.
+    :param request_context: Mutable dict living at the request boundary where we stash times.
+    """
+    def __init__(self, lane: str, model_name: str, request_context: Dict[str, Any]):
+        self.lane = lane
+        self.model_name = model_name
+        self.ctx = request_context
+
+    def on_llm_start(self, *args, **kwargs):
+        # mark LLM start; outer layer should have set ctx["req_start"]
+        self.ctx.setdefault("llm_start", time.perf_counter())
+
+    def on_llm_new_token(self, token: str, **kwargs):
+        # first token = TTFB
+        if not self.ctx.get("ttfb_recorded"):
+            ttfb = time.perf_counter() - self.ctx.get("req_start", time.perf_counter())
+            AGENT_TTFB.labels(lane=self.lane, model=self.model_name).observe(ttfb)
+            self.ctx["ttfb_recorded"] = True
+
+    def on_llm_error(self, error: BaseException, **kwargs):
+        # Count 429s at the LLM boundary if thrown here
+        if isinstance(error, OpenAIRateLimitError):
+            RATE_LIMIT_ERRORS.labels(component="llm", provider="openai", model_or_name=self.model_name).inc()
 
 
 

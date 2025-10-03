@@ -2,6 +2,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import AgentExecutor
 from agaie.agent.tools.tools import calculator, make_knowledge_base_search_tool
+from agaie.observability.observability import instrument_tool
 
 from dotenv import load_dotenv
 
@@ -22,7 +23,7 @@ load_dotenv()
 
 def create_agent(query_engine):
 
-    llm = ChatOpenAI(temperature=0.0, model="gpt-4o-mini")
+    llm = ChatOpenAI(temperature=0.0, model="gpt-4o-mini", streaming=True)
 
     prompt = ChatPromptTemplate.from_messages(
         ("system", "The user will choose a certain topic or stock to query you about it. Please inspect the "
@@ -34,7 +35,11 @@ def create_agent(query_engine):
     )
 
     kb_search_tool = make_knowledge_base_search_tool(query_engine)
-    tools = [calculator, kb_search_tool]
+    # Instrument tools so we get tool latency and error counters
+    tools = [
+        instrument_tool(calculator), 
+        instrument_tool(kb_search_tool)
+    ]
 
     agent =  prompt | llm.bind_tools(tools, tool_choice='auto')
 
@@ -44,6 +49,6 @@ def create_agent(query_engine):
         verbose=True,
     )
 
-    return agent_executor
+    return agent_executor, llm.model_name
     
     
