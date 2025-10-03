@@ -10,11 +10,14 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import weaviate
 from weaviate.classes.config import Configure, Property, DataType
 
-from agaie.app import DATA_ROOT
 from dotenv import load_dotenv
 
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  
+
+load_dotenv(PROJECT_ROOT / ".env")
+
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
 
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://localhost:8080")
 WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY", None)  # optional for local

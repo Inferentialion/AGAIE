@@ -12,11 +12,9 @@ from typing import Any, Dict, List, Optional, Literal, Annotated
 from urllib.parse import urlencode
 
 import os
-from prometheus_client import make_asgi_app
 import requests
 import feedparser
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, HttpUrl
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from pypdf import PdfReader
@@ -24,6 +22,10 @@ from pathlib import Path
 import yaml
 
 from trafilatura import fetch_url as tf_fetch_url, extract as tf_extract
+
+from pydantic import BaseModel, Field, HttpUrl
+from prometheus_client import make_asgi_app
+from openai import RateLimitError as OpenAIRateLimitError
 
 from agaie.rag.index_build import build_vector_index, load_index, make_hybrid_fusion_retriever, hybrid_search
 from agaie.agent.agent_chain import create_agent
@@ -55,9 +57,8 @@ POST /index/build
 """
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]   
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  
 load_dotenv(PROJECT_ROOT / ".env")                   
-load_dotenv()                                       
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
 
@@ -577,7 +578,7 @@ def run_ingest_job(job_id: str, payload: Dict[str, Any]) -> None:
 
 
 # ---------- FastAPI ----------
-app = FastAPI(title="Corpus-agnostic Ingestion Manager", version="0.1.0")
+app = FastAPI(title="Corpus-agnostic Q&A", version="0.1.0")
 
 @app.post("/sources")
 def add_source(payload: SourcePayload, bg: BackgroundTasks):
@@ -644,41 +645,62 @@ class QueryReq(BaseModel):  # TODO: change this; we don't want the user to set t
 
 @app.post("/query")
 def query(req: QueryReq):
+    req_start = time.perf_counter()
+
     # Load an already-built index
     index = load_index(index_name=req.index_name, use_weaviate=config["rag"]["ingestion"]["use_weaviate"])
 
     # Build a query engine from it
     query_engine = index.as_query_engine(similarity_top_k=config["rag"]["retrieval"]["top_k"], response_mode="no_text")
     
-    if config["rag"]["ingestion"]["hybrid"] == True:
-        
-        retr = make_hybrid_fusion_retriever(
-            index_name=req.index_name,
-            dense_top_k=req.dense_k, sparse_top_k=req.sparse_k, fusion_top_k=req.top_k
-        )
-        resp = hybrid_search(retr, req.question, k=req.top_k)
-
-        # TODO: also create something create_agent's knowledge_base_search tool can use in its
-        
-        agent_executor, model_name = create_agent()  # TODO: pass the custom retriever / custom query engine instead of LlamaIndex's here
-        # TODO: do I need to spawn an agent each time a query comes in?
-        answer = agent_executor.invoke({"input": req.question})
-
-    else:
-        resp = query_engine.query(req.question)
-
-        agent_executor, model_name = create_agent(query_engine)  # TODO: do I need to spawn an agent each time a query comes in?
-        answer = agent_executor.invoke({"input": req.question})
+    agent_executor = None
+    model_name = "unknown"
     
-    # Collect context and citations (TODO: currently only from the original query's retrieval, no tool usage included)
-    ctx = "\n\n".join(sn.node.get_content() for sn in resp.source_nodes[: req.top_k])
-    cites = list({
-        (sn.node.metadata or {}).get("source_url")
-        for sn in resp.source_nodes
-        if (sn.node.metadata or {}).get("source_url")
-    })
+    try:
+    
+        if config["rag"]["ingestion"]["hybrid"] == True:
+            
+            retr = make_hybrid_fusion_retriever(
+                index_name=req.index_name,
+                dense_top_k=req.dense_k, sparse_top_k=req.sparse_k, fusion_top_k=req.top_k
+            )
+            resp = hybrid_search(retr, req.question, k=req.top_k)
 
-    return {"answer": answer, "citations": cites[:10]}
+            # TODO: also create something create_agent's knowledge_base_search tool can use in its
+            
+            agent_executor, model_name = create_agent()  # TODO: pass the custom retriever / custom query engine instead of LlamaIndex's here
+            # TODO: do I need to spawn an agent each time a query comes in?
+            answer = agent_executor.invoke({"input": req.question})
+
+        else:
+            resp = query_engine.query(req.question)
+
+            agent_executor, model_name = create_agent(query_engine)  # TODO: do I need to spawn an agent each time a query comes in?
+        
+
+        req_ctx = {"req_start": req_start, "ttfb_recorded": False}
+        cb = TTFBCallback(lane="query", model_name=model_name, request_context=req_ctx)
+
+        answer = agent_executor.invoke({"input": req.question}, config={"callbacks": [cb]})
+
+        
+        # Collect context and citations (TODO: currently only from the original query's retrieval, no tool usage included)
+        ctx = "\n\n".join(sn.node.get_content() for sn in resp.source_nodes[: req.top_k])
+        cites = list({
+            (sn.node.metadata or {}).get("source_url")
+            for sn in resp.source_nodes
+            if (sn.node.metadata or {}).get("source_url")
+        })
+
+        return {"answer": answer, "citations": cites[:10]}
+    
+    except OpenAIRateLimitError:
+        RATE_LIMIT_ERRORS.labels(component="llm", provider="openai", model_or_name=model_name).inc()
+
+        raise
+
+    finally:
+        AGENT_LATENCY.labels(lane="query", model=model_name).observe(time.perf_counter() - req_start)
 
 
 
