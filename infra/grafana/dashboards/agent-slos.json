@@ -1,0 +1,69 @@
+{
+  "annotations": {"list":[{"builtIn":1,"type":"dashboard"}]},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "iteration": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "p95 TTFB by lane",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(agent_ttfb_seconds_bucket[5m])) by (le, lane))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 End-to-end latency by model",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(agent_request_seconds_bucket[5m])) by (le, model))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "429 rate (last 5m)",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 8},
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(rate_limit_errors_total[5m]))" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Tool 5xx rate (last 5m)",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 8},
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(tool_call_errors_total{http_status=\"5xx\"}[5m]))" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Avg tool latency (5m)",
+      "gridPos": {"h": 5, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tool_call_seconds_sum[5m])) by (tool) / sum(rate(tool_call_seconds_count[5m])) by (tool)"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["agaie"],
+  "templating": {"list":[]},
+  "time": {"from":"now-6h","to":"now"},
+  "timezone": "",
+  "title": "AGAIE – Agent SLOs",
+  "version": 1
+}
+

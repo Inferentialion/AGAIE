@@ -19,9 +19,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
 
-WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://localhost:8080")
+WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
+print(WEAVIATE_HOST)
+WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8090"))
 WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY", None)  # optional for local
 WEAVIATE_CLASS = os.getenv("WEAVIATE_CLASS", "FinanceNewsChunk")
+WEAVIATE_SECURE = os.getenv("WEAVIATE_SECURE", "false").lower() == "true"
 
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
@@ -90,41 +93,50 @@ def make_embedder(model_name=None) -> HuggingFaceEmbedding:
     return HuggingFaceEmbedding(model_name=model_name or EMBED_MODEL)
 
 
-def build_vector_store(class_name="FinanceNewsChunk"):
+def build_vector_store(collection_name="FinanceNewsChunk") -> WeaviateVectorStore:
+    """
+    Create/attach to a Weaviate v4 collection that uses no server-side vectorizer
+    (we supply embeddings via LlamaIndex). Returns a LlamaIndex WeaviateVectorStore.
+    """
+    print(f"[weaviate] connecting to {WEAVIATE_HOST}:{WEAVIATE_PORT} (secure={WEAVIATE_SECURE})")
 
-    client = weaviate.connect_to_local(host="http://localhost:8080")
+    if WEAVIATE_API_KEY:
+        client = weaviate.connect_to_custom(
+            http_host=WEAVIATE_HOST,
+            port=WEAVIATE_PORT,
+            http_secure=WEAVIATE_SECURE,
+            auth_client_secret=weaviate.auth.AuthApiKey(WEAVIATE_API_KEY),
+        )
+    else:
+        client = weaviate.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
 
-    # v4 client
-    client = weaviate.connect_to_local(
-        host=WEAVIATE_URL,  # if using remote + API key, use connect_to_weaviate_cloud / connect_to_custom
-    ) if WEAVIATE_API_KEY is None else weaviate.connect_to_custom(
-        http_host=WEAVIATE_URL.replace("http://", "").replace("https://", ""),
-        http_secure=WEAVIATE_URL.startswith("https"),
-        auth_client_secret=weaviate.auth.AuthApiKey(WEAVIATE_API_KEY),
+    if not client.collections.exists(collection_name):  # (v4 API)
+        client.collections.create(
+            name=collection_name,
+            vector_config=Configure.Vectors.self_provided(
+                name="default",
+                vector_index_config=Configure.VectorIndex.hnsw()
+            ),  # we send vectors ourselves
+            properties=[
+                Property(name="text",         data_type=DataType.TEXT),
+                Property(name="title",        data_type=DataType.TEXT),
+                Property(name="author",       data_type=DataType.TEXT),
+                Property(name="source_type",  data_type=DataType.TEXT),
+                Property(name="published_at", data_type=DataType.DATE),
+            ],
         )
 
-    # Define schema for FinanceNewsChunk
-    class_obj = {
-        "class": class_name,
-        "description": "Chunks of finance news articles with metadata",
-        "vectorizer": "none",   # we provide embeddings
-        "properties": [
-            {"name": "text", "dataType": ["text"]},
-            {"name": "title", "dataType": ["string"]},
-            {"name": "author", "dataType": ["string"]},
-            {"name": "source_type", "dataType": ["string"]},
-            {"name": "published_at", "dataType": ["date"]},
-        ]
-    }
+    # readiness check (REST/gRPC both up)
+    try:
+        ready = client.is_ready()
+        print(f"[weaviate] ready={ready}")
+    except Exception as e:
+        print(f"[weaviate] readiness check failed: {e}")
 
-    if not client.schema.exists("FinanceNewsChunk"):
-        client.schema.create_class(class_obj)
-
-    print(client.is_ready())  # True if server is up
-
+    # LlamaIndex v0.10+ with v4 client: use index_name, not class_name
     return WeaviateVectorStore(
         weaviate_client=client,
-        class_name=class_name,
+        index_name=collection_name,
         text_key="text",
     )
 
@@ -189,7 +201,7 @@ def hybrid_search():
 
 
 def test_retrieval(index_name, query, k):
-    vector_store = build_vector_store(class_name="FinanceNewsChunk")
+    vector_store = build_vector_store(collection_name="FinanceNewsChunk")
     # TODO: we don't need StorageContext here, and we don't need load_index_from_storage,
     # as we are using weaviate as the single source of truth, and aiming a a multiprocess approach later on (stateless).
 

@@ -579,7 +579,12 @@ def run_ingest_job(job_id: str, payload: Dict[str, Any]) -> None:
 
 
 # ---------- FastAPI ----------
-app = FastAPI(title="Corpus-agnostic Q&A", version="0.1.0")
+app = FastAPI(title="Corpus-Agnostic Q&A", version="0.0.1")
+metrics_app = make_asgi_app()
+
+app.mount("/metrics", metrics_app)
+
+# RUN: uv run --active uvicorn --app-dir src agaie.app:app --reload --host 0.0.0.0 --port 8080
 
 @app.post("/sources")
 def add_source(payload: SourcePayload, bg: BackgroundTasks):
@@ -659,7 +664,7 @@ def query(req: QueryReq):
     
     try:
     
-        if config["rag"]["ingestion"]["hybrid"] == True:
+        if config["rag"]["retrieval"]["hybrid"] == True:
             
             retr = make_hybrid_fusion_retriever(
                 index_name=req.index_name,
@@ -703,12 +708,4 @@ def query(req: QueryReq):
     finally:
         AGENT_LATENCY.labels(lane="query", model=model_name).observe(time.perf_counter() - req_start)
 
-
-
-if __name__ == "__main__":
-    
-    app = FastAPI("Corpus-Agnostic Q&A", version="0.0.1")
-    metrics_app = make_asgi_app()
-
-    app.mount("/metrics", metrics_app)
 

@@ -1,3 +1,29 @@
+## Steps to run the app
+
+1) Run the app
+```
+uv run --active uvicorn --app-dir src agaie.app:app --host 0.0.0.0 --port 8080
+```
+
+2) Bring up Prometheus + Grafana
+```
+docker copose up -d
+```
+
+3) Open the UIs
+- Prometheus targets: http://localhost:9090/targets -- job agaie-agent should be "UP".
+- Grafana: http://localhost:3000 --> Dashboards --> AGAIE --> Agent SLOs.
+
+
+4) Sanity checks
+```
+docker compose ps
+
+docker exec -it $(docker ps --filter name=prometheus --format '{{.ID}}') \
+  wget -qO- http://host.docker.internal:8080/metrics | head
+```
+
+
 ## AGAIE Workflow
 
 ```
@@ -67,6 +93,21 @@ Legend:
 - Same hybrid retriever can also be exposed as a Tool for agentic follow-ups if desired
 
 ```
+
+
+ ## RAG
+
+ Description: builds a dense+BM25 hybrid index from the extracted and processed chunks.jsonl files (data/processed/...), exposes a fusion retriever (RRF/weighted), and provides a debug /search API to inspect top‑K results with scores.
+
+
+ ## Potential issues and solutions
+
+ If you are running this from linux (as I am) and are having an error with ```uvicorn agaie.app:app --reaload --port X```,
+ it most likely related to inotify tracking too many files (e.g. if you have the venv in the project directory, or due to caches, etc.). 
+
+ A hot fix is to use ```WATCHFILES_FORCE_POLLING=1 uvicorn agaie.app:app --reload --port 8001``` so that it uses uvicorn's polling mode which is more relaxed.
+
+
 
 ## Alpha Vantage API
 
@@ -149,16 +190,4 @@ json
 }
  </pre>
 
-
- ## RAG
-
- Description: builds a dense+BM25 hybrid index from the extracted and processed chunks.jsonl files (data/processed/...), exposes a fusion retriever (RRF/weighted), and provides a debug /search API to inspect top‑K results with scores.
-
-
- ## Potential issues and solutions
-
- If you are running this from linux (as I am) and are having an error with ```uvicorn agaie.app:app --reaload --port X```,
- it most likely related to inotify tracking too many files (e.g. if you have the venv in the project directory, or due to caches, etc.). 
-
- A hot fix is to use ```WATCHFILES_FORCE_POLLING=1 uvicorn agaie.app:app --reload --port 8001``` so that it uses uvicorn's polling mode which is more relaxed.
 

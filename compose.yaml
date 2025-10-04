@@ -1,0 +1,90 @@
+x-environment: &default-env
+  WEAVIATE_HOST: ${WEAVIATE_HOST:-localhost}
+  WEAVIATE_PORT: ${WEAVIATE_PORT:-8090}
+
+networks:
+  monitoring:
+    driver: bridge
+
+services:
+  
+  weaviate:
+    image: semitechnologies/weaviate:1.25.7
+    ports:
+      - "${WEAVIATE_PORT}:8080"   # REST
+      - "50051:50051"             # gRPC
+    environment:
+      QUERY_DEFAULTS_LIMIT: "25"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+
+      # ---- Raft/single-node stability ----
+      CLUSTER_HOSTNAME: "node1"            # stable node id
+      RAFT_BOOTSTRAP_EXPECT: "1"           # declare a 1-node cluster
+      # Optional “self-heal” if the node identity changes across restarts:
+      RAFT_ENABLE_ONE_NODE_RECOVERY: "true"
+      
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 15s
+      timeout: 3s
+      retries: 20
+    networks: [monitoring]
+  
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d          # keep 15 days; tune per disk budget
+      - --storage.tsdb.wal-compression
+      - --web.enable-lifecycle
+    volumes:
+      - prometheus_data:/prometheus
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+    networks: [monitoring]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: "change-me"     # set via env/secret in prod
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      prometheus:
+        condition: service_healthy  # avoids "datasource unavailable" until healthchecks are passed
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infra/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 20
+    networks: [monitoring]
+
+
+volumes:
+  weaviate_data:
+  prometheus_data:
+  grafana_data:
