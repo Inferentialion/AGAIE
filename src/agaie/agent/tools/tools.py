@@ -1,5 +1,17 @@
 from langchain_core.tools import tool
 import math, numexpr
+from pydantic import BaseModel, Field
+
+
+class CalculatorArgs(BaseModel):
+    expression: str = Field(
+        ...,
+        description=(
+            "A mathematical expression to evaluate. "
+            "Supports operators (+, -, *, /, **), parentheses, and functions "
+            "like sin, cos, tan, sqrt, log, exp. Example: '2*sin(pi/3) + sqrt(5)'"
+        )
+    )
 
 
 @tool
@@ -25,14 +37,33 @@ def calculator(expression: str) -> str:
     return str(result.item() if hasattr(result, "item") else result)
 
 
+class KBSearchArgs(BaseModel):
+    agent_query: str = Field(
+        ...,
+        description=(
+            "The user's natural-language question or information need. "
+            "Example: 'Summarize recent news on AAPL earnings.'"
+        )
+    )
+    top_k: int = Field(
+        5,
+        ge=1,
+        le=20,
+        description=(
+            "Maximum number of documents or passages to retrieve. "
+            "Defaults to 5 for concise context."
+        )
+    )
+
+
 def make_knowledge_base_search_tool(query_engine):
     """Build the knowledge_base_search_tool, bound to a Weaviate-backed index."""
     
-    @tool(name="knowledge_base_search")             # TODO: create and pass in an args_schema
-    def knowledge_base_search(agent_query: str):
+    @tool      # TODO: create and pass in an args_schema
+    def knowledge_base_search(agent_query: str, top_k: int = 5):
         """Give the agent access to the RAG system."""
         
-        resp = query_engine.query(agent_query)
+        resp = query_engine.query(agent_query, top_k=top_k)
 
         return resp
     

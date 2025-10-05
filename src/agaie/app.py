@@ -655,7 +655,7 @@ def query(req: QueryReq):
 
     # Load an already-built index
     index = load_index(index_name=req.index_name, use_weaviate=config["rag"]["ingestion"]["use_weaviate"])
-
+    
     # Build a query engine from it
     query_engine = index.as_query_engine(similarity_top_k=config["rag"]["retrieval"]["top_k"], response_mode="no_text")
     

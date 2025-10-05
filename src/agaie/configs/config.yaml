@@ -1,8 +1,8 @@
 rag:
   
   ingestion:
-    use_weaviate: True,
+    use_weaviate: True
   
   retrieval:
-    hybrid: False,
-    top_k: 8,
+    hybrid: False
+    top_k: 8

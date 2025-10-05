@@ -23,6 +23,11 @@ docker exec -it $(docker ps --filter name=prometheus --format '{{.ID}}') \
   wget -qO- http://host.docker.internal:8080/metrics | head
 ```
 
+5) Send a query to test the system
+```
+curl -s -X POST http://localhost:8080/query   -H 'Content-Type: application/json'   -d '{"question":"What is AAPL?","index_name":"finance-news","top_k":3,"dense_k":10,"sparse_k":30}'
+```
+
 
 ## AGAIE Workflow
 
