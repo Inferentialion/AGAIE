@@ -17,6 +17,7 @@ import feedparser
 from dotenv import load_dotenv
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 from pypdf import PdfReader
 from pathlib import Path
 import yaml
@@ -27,9 +28,11 @@ from pydantic import BaseModel, Field, HttpUrl
 from prometheus_client import make_asgi_app
 from openai import RateLimitError as OpenAIRateLimitError
 
+import weaviate
+
 from agaie.rag.index_build import build_vector_index, load_index, make_hybrid_fusion_retriever, hybrid_search
-from agaie.agent.agent_chain import create_agent
-from agaie.observability.observability import TTFBCallback
+from agaie.agent.kb_agent import create_agent
+from agaie.observability.observability import TTFBCallback, ToolMetricsCallback
 from agaie.observability.metrics import AGENT_LATENCY, RATE_LIMIT_ERRORS
 
 
@@ -75,6 +78,9 @@ for d in (RAW_DIR, PROC_DIR, JOBS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "config.yaml"
+
+WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
+WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8090"))
 
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
@@ -578,13 +584,24 @@ def run_ingest_job(job_id: str, payload: Dict[str, Any]) -> None:
         update_job(job_id, status="failed", finished_at=now_iso(), error=str(e))
 
 
-# ---------- FastAPI ----------
-app = FastAPI(title="Corpus-Agnostic Q&A", version="0.0.1")
+# ----- Weaviate connection context manager -----
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    client = weaviate.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
+    app.state.weaviate_client = client
+    try:
+        # Fail fast if the container isn't ready
+        client.is_ready()
+        yield
+    finally:
+        client.close()
+
+# ------------------ FastAPI --------------------
+app = FastAPI(title="Corpus-Agnostic Q&A", version="0.0.1", lifespan=lifespan)
 metrics_app = make_asgi_app()
 
 app.mount("/metrics", metrics_app)
 
-# RUN: uv run --active uvicorn --app-dir src agaie.app:app --reload --host 0.0.0.0 --port 8080
 
 @app.post("/sources")
 def add_source(payload: SourcePayload, bg: BackgroundTasks):
@@ -601,11 +618,19 @@ def add_source(payload: SourcePayload, bg: BackgroundTasks):
 
     # chain a background follow-up that polls for success and then builds the index
     def _after_ingest_build_index(job_id: str):
+        
+        chunk_path = PROC_DIR / job_id / "chunks.jsonl"
+
         for _ in range(90):  # poll up to ~90s; tune as needed
             data = json.loads(job_path_for(job_id).read_text(encoding="utf-8"))
             if data.get("status") == "succeeded":
                 try:
-                    build_vector_index(job_id, index_name=os.environ.get("INDEX_NAME","finance-news"))
+                    build_vector_index(
+                        chunk_path, 
+                        index_name=os.environ.get("INDEX_NAME","finance-news"),
+                        use_weaviate=config["rag"]["ingestion"]["use_weaviate"],
+                        weaviate_client=app.state.weaviate_client,                  # reuse the client created in lifespan
+                    )
                 except Exception as e:
                     update_job(job_id, index_error=str(e))
                 break
@@ -632,32 +657,51 @@ class BuildIndexReq(BaseModel):
     index_name: str = "finance-news"
 
 @app.post("/index/build")
-def index_build(req: BuildIndexReq):   # TODO: call index_build.py here
+def index_build(req: BuildIndexReq):
+    """
+    ops/API trigger that lets us (a) rebuild on demand if the background pass failed,
+    (b) rebuild with different parameters, or (c) rebuild after we've changed our
+    embedding or vector store settings. 
+    
+    This is our manual override and is useful for reprocessing and testing.
+    """
+    
     jf = job_path_for(req.job_id)
     if not jf.exists():
         raise HTTPException(404, "job not found")
     job = json.loads(jf.read_text(encoding="utf-8"))
     if job.get("status") != "succeeded":
         raise HTTPException(409, f"job status is {job.get('status')}, not 'succeeded'")
-    index = build_vector_index(req.job_id, index_name=req.index_name)
+    
+    chunks_path = PROC_DIR / req.job_id / "chunks.jsonl"
+
+    index = build_vector_index(
+        chunks_path=chunks_path,
+        index_name=req.index_name,
+        use_weaviate=config["rag"]["ingestion"]["use_weaviate"],
+        weaviate_client=app.state.weaviate_client,                  # reuse the client created in lifespan
+    )
+
     return {"ok": True, "index_name": req.index_name, "index": index}
 
-class QueryReq(BaseModel):  # TODO: change this; we don't want the user to set these
+class QueryReq(BaseModel):
     question: str
     index_name: str = "finance-news"
     top_k: int = 8
-    dense_k: int = 20
-    sparse_k: int = 60
 
 @app.post("/query")
 def query(req: QueryReq):
     req_start = time.perf_counter()
 
+    TOP_K = config["rag"]["retrieval"]["top_k"] if req.top_k is None else req.top_k
+    DENSE_K = config["rag"]["retrieval"]["dense_k"]
+    SPARSE_K = config["rag"]["retrieval"]["sparse_k"]
+    
     # Load an already-built index
-    index = load_index(index_name=req.index_name, use_weaviate=config["rag"]["ingestion"]["use_weaviate"])
+    index = load_index(index_name=req.index_name, use_weaviate=config["rag"]["ingestion"]["use_weaviate"], weaviate_client=app.state.weaviate_client)
     
     # Build a query engine from it
-    query_engine = index.as_query_engine(similarity_top_k=config["rag"]["retrieval"]["top_k"], response_mode="no_text")
+    query_engine = index.as_query_engine(similarity_top_k=TOP_K, response_mode="no_text")
     
     agent_executor = None
     model_name = "unknown"
@@ -668,15 +712,13 @@ def query(req: QueryReq):
             
             retr = make_hybrid_fusion_retriever(
                 index_name=req.index_name,
-                dense_top_k=req.dense_k, sparse_top_k=req.sparse_k, fusion_top_k=req.top_k
+                dense_top_k=DENSE_K, sparse_top_k=SPARSE_K, fusion_top_k=TOP_K
             )
-            resp = hybrid_search(retr, req.question, k=req.top_k)
+            resp = hybrid_search(retr, req.question, k=TOP_K)
 
             # TODO: also create something create_agent's knowledge_base_search tool can use in its
             
             agent_executor, model_name = create_agent()  # TODO: pass the custom retriever / custom query engine instead of LlamaIndex's here
-            # TODO: do I need to spawn an agent each time a query comes in?
-            answer = agent_executor.invoke({"input": req.question})
 
         else:
             resp = query_engine.query(req.question)
@@ -684,14 +726,15 @@ def query(req: QueryReq):
             agent_executor, model_name = create_agent(query_engine)  # TODO: do I need to spawn an agent each time a query comes in?
         
 
-        req_ctx = {"req_start": req_start, "ttfb_recorded": False}
-        cb = TTFBCallback(lane="query", model_name=model_name, request_context=req_ctx)
+        req_ctx = {"req_start": req_start, "ttfb_recorded": False}  # per request timing context for the callback
+        ttfb_cb = TTFBCallback(lane="query", model_name=model_name, request_context=req_ctx)
+        tool_cb = ToolMetricsCallback()
 
-        answer = agent_executor.invoke({"input": req.question}, config={"callbacks": [cb]})
-
+        result = agent_executor.invoke({"input": req.question}, config={"callbacks": [ttfb_cb, tool_cb]})
+        answer = result["output"] if isinstance(result, dict) and "output" in result else result
         
         # Collect context and citations (TODO: currently only from the original query's retrieval, no tool usage included)
-        ctx = "\n\n".join(sn.node.get_content() for sn in resp.source_nodes[: req.top_k])
+        ctx = "\n\n".join(sn.node.get_content() for sn in resp.source_nodes[: TOP_K])
         cites = list({
             (sn.node.metadata or {}).get("source_url")
             for sn in resp.source_nodes
@@ -702,7 +745,6 @@ def query(req: QueryReq):
     
     except OpenAIRateLimitError:
         RATE_LIMIT_ERRORS.labels(component="llm", provider="openai", model_or_name=model_name).inc()
-
         raise
 
     finally:

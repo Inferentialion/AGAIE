@@ -6,3 +6,5 @@ rag:
   retrieval:
     hybrid: False
     top_k: 8
+    dense_k: 20
+    sparse_k: 60

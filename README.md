@@ -1,13 +1,13 @@
 ## Steps to run the app
 
-1) Run the app
+1) Bring up Weaviate, and Prometheus + Grafana
+```
+docker compose up -d
+``` 
+
+2) Run the app
 ```
 uv run --active uvicorn --app-dir src agaie.app:app --host 0.0.0.0 --port 8080
-```
-
-2) Bring up Prometheus + Grafana
-```
-docker copose up -d
 ```
 
 3) Open the UIs

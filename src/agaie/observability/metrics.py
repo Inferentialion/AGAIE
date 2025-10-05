@@ -5,7 +5,7 @@ from prometheus_client import Counter, Histogram
 
 AGENT_TTFB = Histogram(
     "agent_ttfb_seconds",
-    "Time-to-first-byte for agent reponses",
+    "Time-to-first-byte for agent responses",
     ["lane", "model"],
     buckets=(0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2, 3, 5, 8, 13, 21)  # how many observerd values are <= n seconds
 )
@@ -24,7 +24,7 @@ TOOL_LATENCY  = Histogram(
     buckets=(0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10)
 )
 
-TOOL_ERRORS = Histogram(
+TOOL_ERRORS = Counter(
     "tool_call_errors_total",
     "Tool call errors by type and HTTP status class",
     ["tool", "error_type", "http_status"],

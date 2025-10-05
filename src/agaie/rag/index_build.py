@@ -1,9 +1,9 @@
 from __future__ import annotations
 import json, os
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
-from llama_index.core.schema import TextNode, MetadataMode
+from llama_index.core.schema import TextNode
 from llama_index.core import Document, VectorStoreIndex, StorageContext, load_index_from_storage
 from llama_index.vector_stores.weaviate import WeaviateVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -20,10 +20,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", PROJECT_ROOT / "data"))
 
 WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "localhost")
-print(WEAVIATE_HOST)
 WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8090"))
 WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY", None)  # optional for local
-WEAVIATE_CLASS = os.getenv("WEAVIATE_CLASS", "FinanceNewsChunk")
+# WEAVIATE_COLLECTION = os.getenv("WEAVIATE_COLLECTION", "FinanceNewsChunk")  # TODO: integrate; currently unused
 WEAVIATE_SECURE = os.getenv("WEAVIATE_SECURE", "false").lower() == "true"
 
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -93,22 +92,31 @@ def make_embedder(model_name=None) -> HuggingFaceEmbedding:
     return HuggingFaceEmbedding(model_name=model_name or EMBED_MODEL)
 
 
-def build_vector_store(collection_name="FinanceNewsChunk") -> WeaviateVectorStore:
+def build_vector_store(collection_name="FinanceNewsChunk", 
+                weaviate_client: "weaviate.WeaviateClient | None" = None,) -> WeaviateVectorStore:
     """
     Create/attach to a Weaviate v4 collection that uses no server-side vectorizer
     (we supply embeddings via LlamaIndex). Returns a LlamaIndex WeaviateVectorStore.
+    
+    :param collection_name: Weaviate collection (class) name.
+    :param weaviate_client: Existing client to reuse. If None, a new client is created
+                            and the caller then owns its lifecycle (must close later).
+    :return: Weaviate-backed vector store usable by LlamaIndex.
     """
-    print(f"[weaviate] connecting to {WEAVIATE_HOST}:{WEAVIATE_PORT} (secure={WEAVIATE_SECURE})")
 
-    if WEAVIATE_API_KEY:
-        client = weaviate.connect_to_custom(
-            http_host=WEAVIATE_HOST,
-            port=WEAVIATE_PORT,
-            http_secure=WEAVIATE_SECURE,
-            auth_client_secret=weaviate.auth.AuthApiKey(WEAVIATE_API_KEY),
-        )
-    else:
-        client = weaviate.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
+    client = weaviate_client
+    if client is None:
+        print(f"[weaviate] connecting to {WEAVIATE_HOST}:{WEAVIATE_PORT} (secure={WEAVIATE_SECURE})")
+
+        if WEAVIATE_API_KEY:
+            client = weaviate.connect_to_custom(
+                http_host=WEAVIATE_HOST,
+                port=WEAVIATE_PORT,
+                http_secure=WEAVIATE_SECURE,
+                auth_client_secret=weaviate.auth.AuthApiKey(WEAVIATE_API_KEY),
+            )
+        else:
+            client = weaviate.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
 
     if not client.collections.exists(collection_name):  # (v4 API)
         client.collections.create(
@@ -141,11 +149,25 @@ def build_vector_store(collection_name="FinanceNewsChunk") -> WeaviateVectorStor
     )
 
 
-def build_vector_index(chunks_path, index_name = "finance-news", use_weaviate=False, embedding_model_name = None) -> VectorStoreIndex:
+def build_vector_index(
+        chunks_path,
+        index_name = "finance-news", 
+        use_weaviate=False, 
+        embedding_model_name = None,
+        weaviate_client: "weaviate.WeaviateClient | None" = None,
+    ) -> VectorStoreIndex:
+
     """Build, persist and update the vector index.
 
     Create/update VectorStoreIndex at data/indexes/{index_name}.
-    If it already exists, we load and insert new nodes."""
+    If it already exists, we load and insert new nodes.
+    
+    :param chunks_path: Path to processed/chunked corpus (JSONL).
+    :param index_name: Local index dir name (unused for Weaviate).
+    :param use_weaviate: If True, use remote store; else use local disk.
+    :param embedding_model_name: HF embedding model to use.
+    :param weaviate_client: Existing client to reuse when `use_weaviate=True`.
+    """
 
     rows = read_chunks_jsonl(chunks_path=chunks_path)
     nodes = rows_to_nodes(rows)
@@ -153,8 +175,7 @@ def build_vector_index(chunks_path, index_name = "finance-news", use_weaviate=Fa
 
     if use_weaviate:
         # Stateless remote-backed path (safe for multi-process ingestion).
-        vector_store = build_vector_store()
-        storage = StorageContext.from_defaults(vector_store=vector_store)
+        vector_store = build_vector_store(weaviate_client=weaviate_client)
         index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embedder)
         index.insert_nodes(nodes)
         return index
@@ -178,17 +199,25 @@ def build_vector_index(chunks_path, index_name = "finance-news", use_weaviate=Fa
 
     return index
 
-def load_index(index_name: str, use_weaviate: bool = False, embed_model = None):
-    embedder = make_embedder()
+def load_index(
+        index_name: str, 
+        use_weaviate: bool = False, 
+        embed_model = None,
+        weaviate_client: "weaviate.WeaviateClient | None" = None,
+    ):
+    """
+    :param weaviate_client: Existing client to reuse when `use_weaviate=True`.
+    """
+    embedder = embed_model or make_embedder()
     
     if use_weaviate:
         # attach to remote store to reaccess it
-        vs = build_vector_store()
+        vs = build_vector_store(weaviate_client=weaviate_client)
         return VectorStoreIndex.from_vector_store(vs, embed_model=embedder)
     else:
         persist_dir = INDEX_DIR / index_name
         storage = StorageContext.from_defaults(persist_dir=str(persist_dir))
-        return load_index_from_storage(storage, embed_model=embed_model)
+        return load_index_from_storage(storage, embed_model=embedder)
     
 
 def make_hybrid_fusion_retriever():

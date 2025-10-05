@@ -13,7 +13,6 @@ class CalculatorArgs(BaseModel):
         )
     )
 
-
 @tool(args_schema=CalculatorArgs)
 def calculator(expression: str) -> str:
     """
@@ -45,28 +44,36 @@ class KBSearchArgs(BaseModel):
             "Example: 'Summarize recent news on AAPL earnings.'"
         )
     )
-    top_k: int = Field(
-        5,
-        ge=1,
-        le=20,
-        description=(
-            "Maximum number of documents or passages to retrieve. "
-            "Defaults to 5 for concise context."
-        )
-    )
-
 
 def make_knowledge_base_search_tool(query_engine):
     """Build the knowledge_base_search_tool, bound to a Weaviate-backed index."""
     
     @tool(args_schema=KBSearchArgs)
-    def knowledge_base_search(agent_query: str, top_k: int = 5):
+    def knowledge_base_search(agent_query: str):
         """Give the agent access to the RAG system."""
         
-        resp = query_engine.query(agent_query, top_k=top_k)
+        resp = query_engine.query(agent_query)
 
         return resp
     
     return knowledge_base_search
 
 
+class FinalAnswerArgs(BaseModel):
+    content: str = Field(
+        ...,
+        description=(
+            "The complete final answer to return to the user. "
+            "Include all relevant information and citations."
+        ),
+    )
+
+@tool(args_schema=FinalAnswerArgs)
+def final_answer(content: str) -> str:
+    """
+    Explicitly signal that the agent is ready to provide the user's final answer.
+
+    :param content: The text of the final answer, including citations if applicable.
+    :return: The same content (used as a tool observation so the loop can stop).
+    """
+    return content
