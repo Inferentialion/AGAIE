@@ -14,7 +14,7 @@ class CalculatorArgs(BaseModel):
     )
 
 
-@tool
+@tool(args_schema=CalculatorArgs)
 def calculator(expression: str) -> str:
     """
     Evaluate a numeric expression safely with numexpr.
@@ -59,7 +59,7 @@ class KBSearchArgs(BaseModel):
 def make_knowledge_base_search_tool(query_engine):
     """Build the knowledge_base_search_tool, bound to a Weaviate-backed index."""
     
-    @tool      # TODO: create and pass in an args_schema
+    @tool(args_schema=KBSearchArgs)
     def knowledge_base_search(agent_query: str, top_k: int = 5):
         """Give the agent access to the RAG system."""
         
