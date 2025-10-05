@@ -1,0 +1,12 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus                   # stable ID; nice for dashboard JSONs
+    type: prometheus
+    access: proxy                     # Grafana will proxy queries to Prometheus
+    url: http://prometheus:9090       # service name + port from compose
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s                # scrape resolution hints for graphs
+      httpMethod: POST                # avoids URL length issues on big queries

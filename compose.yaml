@@ -62,7 +62,7 @@ services:
     image: grafana/grafana:11.2.0
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: "change-me"     # set via env/secret in prod
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASS}"     # set via env/secret in prod
       GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/"
       GF_USERS_ALLOW_SIGN_UP: "false"
     depends_on:
